@@ -1,0 +1,226 @@
+/*Using macro to automate the process to read all 20 csv files /*
+
+/*Create a macro to read CSV files */
+%macro import_csv(file_name);
+    %local dataset_name month_code year;
+
+    /* Extract year and month code from file name */
+    %let year = %substr(&file_name, 3, 4); /* Get the year (4 characters starting from position 3) */
+    %let month_code = %substr(&file_name, 7, 1); /* Get the month code (1 character starting from position 7) */
+
+    /* Map month codes to month names */
+    %if &month_code = F %then %let month_name = jan;
+    %else %if &month_code = H %then %let month_name = mar;
+    %else %if &month_code = K %then %let month_name = may;
+    %else %if &month_code = N %then %let month_name = jul;
+    %else %if &month_code = U %then %let month_name = sep;
+    %else %if &month_code = X %then %let month_name = nov;
+    %else %let month_name = unknown; /* Handle any unexpected month codes */
+
+    /* Generate the dataset name in the desired format */
+    %let dataset_name = &month_name.&year; 
+
+    data &dataset_name;
+        infile "C:\\Users\\namee\\Desktop\\ECMT\\SAS_Proj_Data\\&file_name" dsd missover firstobs=2;
+        input symbol $ date : mmddyy10. open high low settle volume open_interest;
+		
+        /* Apply date format */
+        format date date9.; /* Set the date variable to have a date format */
+
+    run;
+%mend import_csv;
+
+/*Read the list of CSV files into a dataset */
+filename csvfiles pipe 'dir "C:\Users\namee\Desktop\ECMT\SAS_Proj_Data\*.csv" /b';
+
+data file_list;
+    infile csvfiles truncover;
+    input file_name $100.; /* Store each file name in a variable */
+run;
+
+/*Loop through each file and call the macro */
+data _null_;
+    set file_list;
+    /* Call the macro for each file */
+    call execute('%import_csv(' || file_name || ');');
+run;
+
+/*Create an new dataset all_data to hold all combined data */
+
+
+data all_data; 
+    /* Use the SET statement to stack all datasets */
+    set 
+        jan2007 
+        jan2008 
+        jan2009 
+        jan2010 
+        jul2007 
+        jul2008 
+        jul2009 
+        mar2007 
+        mar2008 
+        mar2009 
+        mar2010 
+        may2007 
+        may2008 
+        may2009 
+        nov2007 
+        nov2008 
+        nov2009 
+        sep2007 
+        sep2008 
+        sep2009;
+	 /* Apply date format */
+        format date date9.; /* Set the date variable to have a date format */
+run;
+
+/*Cleaning data and checking for any nulls or duplicates*/
+
+
+/*Check for duplicates */
+proc sort data=all_data nodupkey out=duplicates;
+    by symbol date; /* Specify the variables to check for duplicates */
+run;
+
+/* Sort the dataset and remove duplicates based on Symbol and Date */
+proc sort data=all_data nodupkey out=unique_data;
+    by Symbol Date; /* Specify the key variables */
+run;
+
+/* Check the number of duplicates found */
+data _null_;
+    if nobs = 0 then put "No duplicates found.";
+    else put "Duplicates found: " nobs;
+run;
+
+/*Sorting data to check if all the contracts has prices before the expiration date or beyond that too */
+
+proc sort data=all_data;
+    by Symbol Date;
+run;
+
+data last_date_contracts;
+    set all_data;
+    by Symbol Date;
+    if last.Symbol; /* Keep only the last observation for each Symbol */
+run;
+
+/*Creating a new data set corrected that have prices  data only till one day before the day f expiration of the contract*/
+
+data corrected;
+    set all_data;
+    if not (Symbol = 'RR2007F' and Date > '14JAN2007'd);
+    if not (Symbol = 'RR2007H' and Date > '14MAR2007'd);
+run;
+
+/*Checking if now all contarcat prices are before the expiration date or not, it seems like it is. Can check from the data_set Last_date2*/
+proc sort data=corrected;
+    by Symbol Date;
+run;
+
+data last_date2;
+    set corrected;
+    by Symbol Date;
+    if last.Symbol; /* Keep only the last observation for each Symbol */
+run;
+
+/*Subsetting dat to only to relevant information that is relevants columns date settle and symbol and date from jan 2007 to dec 2009*/
+
+data relevant; /* Name of the new subset dataset */
+    set corrected; /* Original dataset */
+    keep Date Symbol Settle; /* Specify the variables to keep */
+
+    /* Filter for dates from January 2007 to December 2009 */
+    if Date >= '01JAN2007'd and Date <= '31DEC2009'd; 
+run;
+
+proc sort data=relevant;
+    by Date Symbol;
+run;
+
+proc contents data=relevant;
+run;
+
+
+
+data version;
+    set relevant; /* Replace with your actual dataset name */
+
+    /* Initialize the expiration date variable */
+    length expiration_date 8;
+    expiration_date = .; /* Set to missing initially */
+
+    /* Extract the year and month from the symbol */
+    year = substr(symbol, 3, 4); /* Get the year from the symbol (characters 3 to 6) */
+    month_code = substr(symbol, 7); /* Get the month code (character 6) */
+
+    /* Determine the month number based on the code */
+    if month_code = 'F' then month_num = 1;   /* January */
+    else if month_code = 'H' then month_num = 3; /* March */
+    else if month_code = 'K' then month_num = 5; /* May */
+    else if month_code = 'N' then month_num = 7; /* July */
+    else if month_code = 'U' then month_num = 9; /* September */
+    else if month_code = 'X' then month_num = 11; /* November */
+    else month_num = .; /* Unknown month code */
+
+    /* Create the expiration date (15th day of the month) */
+    if month_num ne . then do;
+        expiration_date = mdy(month_num, 15, year); /* Create date using month, day, year */
+    end;
+
+    /* Format the expiration date to '15JAN2007' */
+    format expiration_date date9.;
+
+run;
+
+/* To see the formatted expiration date */
+data final_dataset;
+    set version;
+    formatted_expiration_date = put(expiration_date, date9.); /* Convert to character format */
+	keep symbol date settle expiration_date;
+run;
+
+
+
+/*Creating Nearby Series*/
+
+/* Create a new dataset to retain only the first observation for each date */
+data Nearby_series;
+    set final_dataset;
+    by date; /* Enable 'by' processing */
+
+    /* Retain the first observation for each unique date */
+    if first.date then output;
+run;
+
+proc export data=Nearby_series
+    outfile="C:\Users\namee\Desktop\ECMT\SAS_Proj_Data\NearbySeries.xlsx" /* Specify the path and filename */
+    dbms=xlsx /* Use xlsx format for Excel files */
+    replace; /* Replace the file if it already exists */
+run;
+
+ods pdf file='C:\Users\namee\Desktop\ECMT\SAS_Proj_Data\TimeSeriesPlot';
+
+
+/* Time Series Plot */
+proc sgplot data=Nearby_series;
+    series x=date y=settle / lineattrs=(thickness=2 color=blue) markers;
+    xaxis label="Date" values=('01JAN2007'd to '31DEC2007'd by month) /* customize as needed */;
+    yaxis label="Settle Price of Closest to Expiration Contract" values=(8 to 15 by 1);
+    title "Time Series Plot of Nearby Series";
+run;
+
+ods close;
+
+/*Bonus Question*/
+
+/* Since the Nearby Series is constructed to roll over to the next closest contract upon the 
+expiration of the current one, there is a possibility of a larger-than-expected price change (the first diffecrence Pt- Pt-1). 
+This change may not primarily reflect actual market price fluctuations but rather differences 
+due to contract terms or maturity. Additionally, this roll-over effect can introduce skewed returns, 
+as the price is reset to that of a new contract once the previous one expires.*/
+
+
+
+
